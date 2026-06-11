@@ -2,6 +2,8 @@
 import streamlit as st
 import pandas as pd
 import os
+from getapi_service import consultar_patente
+import re
 
 st.set_page_config(page_title="Tasador SII", layout="wide")
 
@@ -27,7 +29,16 @@ def load_data(path="sii_base.csv"):
     return df
 
 df = load_data()
+def normalizar_texto(texto):
+    texto = str(texto).upper()
 
+    # eliminar guiones, espacios y puntos
+    texto = re.sub(r"[-./]", "", texto)
+
+    # eliminar espacios múltiples
+    texto = " ".join(texto.split())
+
+    return texto
 # --- Estilos y título ---
 st.markdown(
     """
@@ -46,92 +57,205 @@ st.markdown('<div class="big-title">🚗 Tasador Vehicular SII</div>', unsafe_al
 st.markdown('<div class="subtle">Filtra por Marca, Modelo y Año. Usa los filtros adicionales si los necesitas.</div>', unsafe_allow_html=True)
 st.write("")  # espacio
 
+# =====================================
+# CONSULTA AUTOMÁTICA POR PATENTE
+# =====================================
+
+st.markdown("## 🔍 Consulta por Patente")
+
+patente = st.text_input(
+    "Ingrese patente",
+    placeholder="Ej: SGXR43"
+).upper().replace("-", "").strip()
+
+if st.button("Consultar patente", key="btn_patente"):
+    try:
+        datos = consultar_patente(patente)
+        #st.json(datos)  # Mostrar datos crudos para debug
+        data = datos.get("data", {})
+        codigo_sii = str(data.get("codeSii") or "").strip()
+        # Marca
+        marca_api = ""
+        # Caso 1: brand viene directo en data
+        if isinstance(data.get("brand"), dict):
+            marca_api = str(
+                data.get("brand", {}).get("name") or ""
+            ).upper().strip()
+    # Caso 2: brand viene dentro del modelo
+        if not marca_api:
+            marca_api = str(
+                (
+                    data.get("model", {})
+                    .get("brand", {})
+                    .get("name")
+                ) or ""
+            ).upper().strip()
+    # Caso 3: si viene como texto
+        if not marca_api:
+            marca_api = str(data.get("brand") or "").upper().strip()
+    # Fallback
+        if not marca_api:
+            marca_api = "NO INFORMADA"
+        modelo_api = str(
+            (data.get("model") or {}).get("name") or ""
+        ).upper().strip()
+
+        anio_api = str(data.get("year") or "").strip()
+        version_api = str(data.get("version") or "").upper().strip()
+        combustible_api = str(data.get("fuel") or "").upper().strip()
+        transmision_api = str(
+            data.get("transmission") or ""
+        ).upper().strip()
+        cc_api = str(data.get("engine") or "").strip()
+        st.success("Vehículo encontrado")
+
+        # Autocompletar filtros manuales
+        st.session_state["marca"] = marca_api
+        st.session_state["modelo"] = modelo_api
+        st.session_state["anio"] = anio_api
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Marca", marca_api)
+        with col2:
+            st.metric("Modelo", modelo_api)
+        with col3:
+            st.metric("Año", anio_api)
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            st.metric("Versión", version_api)
+        with col5:
+            st.metric("Combustible", combustible_api)
+        with col6:
+            st.metric("Transmisión", transmision_api)
+
+        # =====================================
+        # CRUCE AUTOMÁTICO CON SII
+        # =====================================
+        #st.write("Código SII GetAPI:", codigo_sii)
+
+        #st.write(
+        #"Primeros códigos SII del CSV:",
+        #df.iloc[:,0].head(10).tolist()
+        #)
+        # =====================================
+        # CRUCE AUTOMÁTICO CON SII
+        # =====================================
+
+        st.markdown("### 💰 Tasación SII")
+
+        # DEBUG (puedes borrarlo después)
+        st.write("Código SII GetAPI:", codigo_sii)
+        if not codigo_sii:
+            st.warning(
+                "GetAPI no entregó Código SII. Buscando por Marca, Modelo y Año..."
+            )
+            
+            resultado_api = df.copy()
+            if marca_api != "NO INFORMADA":
+                resultado_api = resultado_api[
+                    resultado_api.iloc[:,3]
+                    .astype(str)
+                    .str.upper()
+                    .str.contains(marca_api, na=False)
+                ]
+            if modelo_api:
+    # Simplificar el modelo para mejorar coincidencias
+                modelo_busqueda = normalizar_texto(modelo_api)
+                palabras_excluir = [
+                    "4X2", "4X4", "2WD", "4WD",
+                    "MT", "AT", "CVT",
+                    "DIESEL", "BENCINA",
+                    "20", "25", "30", "35",
+                    "14", "15", "16", "18", "20"
+                ]
+
+                for palabra in palabras_excluir:
+                    modelo_busqueda = modelo_busqueda.replace(palabra, "")
+
+                modelo_busqueda = modelo_busqueda.strip()
+                st.write("Modelo GetAPI:", modelo_api)
+                st.write("Modelo usado para buscar:", modelo_busqueda)
+                resultado_api = resultado_api[
+                    resultado_api.iloc[:,4]
+                    .astype(str)
+                    .apply(normalizar_texto)
+                    .str.contains(modelo_busqueda, na=False)
+                ]
+            if anio_api:
+                resultado_api = resultado_api[
+                    resultado_api.iloc[:,1]
+                    .astype(str)
+                    == anio_api
+                ]
+                st.session_state["resultado_patente"] = resultado_api.copy()
+
+            if len(resultado_api) == 0:
+
+                st.error(
+                    "No se encontró ninguna coincidencia en la base SII."
+                )
+
+            elif len(resultado_api) == 1:
+
+                st.success("Tasación encontrada.")
+
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
+
+            else:
+
+                st.warning(
+                    f"Se encontraron {len(resultado_api)} coincidencias."
+                )
+
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
+        else:
+            resultado_api = df[
+                df.iloc[:, 0]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                == codigo_sii.upper()
+            ]
+            if len(resultado_api) == 0:
+                st.session_state["resultado_patente"] = resultado_api.copy()    
+                st.error(
+                    "No se encontró ninguna coincidencia en la base SII."
+            )
+            elif len(resultado_api) == 1:
+                st.success("Tasación encontrada.")
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
+            else:
+                st.warning(
+                    f"Se encontraron {len(resultado_api)} coincidencias."
+                )
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
+                st.info(
+                    "Utiliza los filtros manuales para refinar."
+                )
+    except Exception as e:
+        st.error(f"Error consultando GetAPI: {e}")
+st.divider()
 # --- Botón para reiniciar filtros ---
-if st.button("Limpiar filtros"):
+if st.button("Limpiar filtros", key="btn_limpiar"):
     for k in list(st.session_state.keys()):
-        if k.startswith(("marca","modelo","anio","col_")):
+        if (
+            k.startswith(("marca", "modelo", "anio", "col_"))
+            or k == "resultado_patente"
+        ):
             del st.session_state[k]
 
 # --- Selects en una fila (con checks por cantidad de columnas) ---
-ncols = df.shape[1]
-
-c1, c2, c3 = st.columns([1,1,1])
-with c1:
-    if ncols > 3:
-        marca_opts = sorted(df.iloc[:,3].dropna().unique().tolist())
-    else:
-        marca_opts = []
-    marca = st.selectbox("Marca", [""] + marca_opts, key="marca")
-with c2:
-    modelo_opts = []
-    if marca and ncols > 4:
-        modelo_opts = sorted(df[df.iloc[:,3]==marca].iloc[:,4].dropna().unique().tolist())
-    modelo = st.selectbox("Modelo", [""] + modelo_opts, key="modelo")
-with c3:
-    anio_opts = []
-    if marca and modelo and ncols > 1:
-        anio_opts = sorted(df[(df.iloc[:,3]==marca) & (df.iloc[:,4]==modelo)].iloc[:,1].astype(str).dropna().unique().tolist())
-    anio = st.selectbox("Año", [""] + anio_opts, key="anio")
-
-# --- Aplicar filtros sobre copia para preservar df original ---
-d_filtered = df.copy()
-if marca and ncols > 3:
-    d_filtered = d_filtered[d_filtered.iloc[:,3]==marca]
-if modelo and ncols > 4:
-    d_filtered = d_filtered[d_filtered.iloc[:,4]==modelo]
-if anio and ncols > 1:
-    d_filtered = d_filtered[d_filtered.iloc[:,1].astype(str)==anio]
-
-# --- Filtros adicionales (columnas 9,11,12 si existen) ---
-extra_cols = [9,11,12]
-valid_extra = [c for c in extra_cols if c < ncols]
-if valid_extra:
-    cols_ui = st.columns([1]*len(valid_extra))
-    for i, col_idx in enumerate(valid_extra):
-        vals = sorted([v for v in d_filtered.iloc[:,col_idx].dropna().unique() if v != ""])
-        if len(vals) > 0:
-            with cols_ui[i]:
-                label = df.columns[col_idx] if isinstance(df.columns[col_idx], str) else f"Col {col_idx}"
-                sel = st.selectbox(label, ["Todas"] + vals, key=f"col_{col_idx}")
-                if sel and sel != "Todas":
-                    d_filtered = d_filtered[d_filtered.iloc[:,col_idx] == sel]
-
-# --- Mostrar cantidad de resultados destacado ---
-st.markdown(f"<div class='metric'>Resultados encontrados: <strong>{len(d_filtered)}</strong></div>", unsafe_allow_html=True)
-st.write("")
-
-# --- Quitar columnas no necesarias (índices 8,13,14,15,17,18) ---
-drop_idxs = [i for i in [8,13,14,15,17,18] if i < d_filtered.shape[1]]
-if drop_idxs:
-    cols_to_drop = d_filtered.columns[drop_idxs].tolist()
-    d_display = d_filtered.drop(columns=cols_to_drop)
-else:
-    cols_to_drop = []
-    d_display = d_filtered.copy()
-
-# --- Mantener nombres reales del csv (limpiar espacios) y asegurar unicidad ---
-clean_names = []
-for c in d_display.columns:
-    name = c.strip() if isinstance(c, str) else str(c)
-    clean_names.append(name)
-
-# asegurar unicidad añadiendo sufijos sólo si hay duplicados
-seen = {}
-uniq_names = []
-for name in clean_names:
-    if name in seen:
-        seen[name] += 1
-        uniq_names.append(f"{name} ({seen[name]})")
-    else:
-        seen[name] = 0
-        uniq_names.append(name)
-
-d_display.columns = uniq_names
-
-# --- Mostrar la tabla con encabezado claro ---
-st.markdown("#### Tabla de resultados")
-if d_display.shape[1] == 0:
-    st.info("No hay columnas para mostrar (se eliminaron columnas solicitadas). Revisa la lista de índices a eliminar si es necesario.")
-else:
-    st.dataframe(d_display.reset_index(drop=True), use_container_width=True)
-# ...existing code...
