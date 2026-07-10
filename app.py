@@ -30,15 +30,17 @@ def load_data(path="sii_base.csv"):
 
 df = load_data()
 def normalizar_texto(texto):
+
     texto = str(texto).upper()
 
-    # eliminar guiones, espacios y puntos
-    texto = re.sub(r"[-./]", "", texto)
+    texto = texto.replace("-", "")
+    texto = texto.replace("/", "")
+    texto = texto.replace(".", "")
+    texto = texto.replace(",", "")
 
-    # eliminar espacios múltiples
-    texto = " ".join(texto.split())
+    texto = re.sub(r"\s+", " ", texto)
 
-    return texto
+    return texto.strip()
 # --- Estilos y título ---
 st.markdown(
     """
@@ -161,34 +163,79 @@ if st.button("Consultar patente", key="btn_patente"):
                     .str.contains(marca_api, na=False)
                 ]
             if modelo_api:
-    # Simplificar el modelo para mejorar coincidencias
+                # Simplificar el modelo para mejorar coincidencias
                 modelo_busqueda = normalizar_texto(modelo_api)
-                palabras_excluir = [
-                    "4X2", "4X4", "2WD", "4WD",
-                    "MT", "AT", "CVT",
-                    "DIESEL", "BENCINA",
-                    "20", "25", "30", "35",
-                    "14", "15", "16", "18", "20"
-                ]
 
-                for palabra in palabras_excluir:
+                # eliminar cilindradas tipo 1.6, 2.4, 3.0
+                modelo_busqueda = re.sub(r"\d+\.\d+", "", modelo_busqueda)
+
+                # eliminar palabras comunes
+                for palabra in [
+                    "4X2",
+                    "4X4",
+                    "2WD",
+                    "4WD",
+                    "MT",
+                    "AT",
+                    "CVT",
+                    "DCT",
+                    "DIESEL",
+                    "BENCINA",
+                    "TURBO"
+                ]:
                     modelo_busqueda = modelo_busqueda.replace(palabra, "")
 
-                modelo_busqueda = modelo_busqueda.strip()
-                st.write("Modelo GetAPI:", modelo_api)
-                st.write("Modelo usado para buscar:", modelo_busqueda)
+                modelo_busqueda = " ".join(modelo_busqueda.split())
+
+                # Casos especiales
+                modelo_busqueda = (
+                    modelo_busqueda
+                    .replace("DMAX", "DMAX")
+                    .replace("DMAX4WD", "DMAX")
+                    .replace("NS160FI", "")
+                )
+
+            st.write("Modelo GetAPI:", modelo_api)
+            st.write("Modelo usado para buscar:", modelo_busqueda)
+
+            resultado_api = resultado_api[
+                resultado_api.iloc[:,4]
+                .astype(str)
+                .apply(normalizar_texto)
+                .apply(
+                    lambda x:
+                        modelo_busqueda in x
+                        or x in modelo_busqueda
+                )
+            ]
+            if len(resultado_api) == 0:
+
+                primer_modelo = modelo_busqueda.split()[0]
+
+            resultado_api = df.copy()
+
+            if marca_api != "NO INFORMADA":
                 resultado_api = resultado_api[
-                    resultado_api.iloc[:,4]
+                    resultado_api.iloc[:,3]
                     .astype(str)
-                    .apply(normalizar_texto)
-                    .str.contains(modelo_busqueda, na=False)
+                    .str.upper()
+                    .str.contains(marca_api, na=False)
                 ]
+
+            resultado_api = resultado_api[
+                resultado_api.iloc[:,4]
+                .astype(str)
+                .apply(normalizar_texto)
+                .str.contains(primer_modelo, na=False)
+            ]
+
             if anio_api:
                 resultado_api = resultado_api[
                     resultado_api.iloc[:,1]
                     .astype(str)
                     == anio_api
                 ]
+
                 st.session_state["resultado_patente"] = resultado_api.copy()
 
             if len(resultado_api) == 0:
@@ -223,6 +270,14 @@ if st.button("Consultar patente", key="btn_patente"):
                 .str.strip()
                 .str.upper()
                 == codigo_sii.upper()
+            ]
+
+            # Filtrar además por año
+            resultado_api = resultado_api[
+                resultado_api.iloc[:, 1]
+                .astype(str)
+                .str.strip()
+                == anio_api
             ]
             if len(resultado_api) == 0:
                 st.session_state["resultado_patente"] = resultado_api.copy()    
