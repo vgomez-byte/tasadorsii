@@ -267,8 +267,15 @@ if st.button("Consultar patente", key="btn_patente"):
                 resultado_api.iloc[:, 1]
                 .astype(str)
                 .str.strip()
-                == anio_api
+                == anio_api.strip()
             ]
+            st.write("Después de filtrar por año:")
+            st.dataframe(resultado_api)
+            st.write("Código buscado:", codigo_sii)
+            st.write("Año buscado:", anio_api)
+            st.write("Coincidencias por código:")
+            st.dataframe(resultado_api)
+
             if len(resultado_api) == 0:
                 st.session_state["resultado_patente"] = resultado_api.copy()    
                 st.error(
