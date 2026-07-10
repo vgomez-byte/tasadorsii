@@ -38,19 +38,60 @@ def load_data(path="sii_base.csv"):
 
 df = load_data()
 def normalizar_texto(texto):
+    reemplazos = {
+    "C/": "CARGA ",
+    "PLANA": "PLANA ",
+    "CPLANA": "CARGA PLANA",
+    "C/PLANA": "CARGA PLANA",
+    "CHASIS": "",
+    "CABINA": "",
+    "MT": "MECANICA",
+    "AT": "AUTOMATICA",
+    "MECÁNICA": "MECANICA",
+    "AUTOMÁTICA": "AUTOMATICA"
+}
 
-    texto = str(texto).upper()
-
-    texto = texto.replace("-", "")
-    texto = texto.replace("/", "")
-    texto = texto.replace(".", "")
-    texto = texto.replace(",", "")
-
-    texto = re.sub(r"\d+\.\d+", "", texto)
-
-    texto = re.sub(r"\s+", " ", texto)
-
+    for viejo, nuevo in reemplazos.items():
+        texto = texto.replace(viejo, nuevo)
+        texto = str(texto).upper()
+        texto = texto.replace("-", "")
+        texto = texto.replace("/", "")
+        texto = texto.replace(".", "")
+        texto = texto.replace(",", "")
+        texto = re.sub(r"\d+\.\d+", "", texto)
+        texto = re.sub(r"\b4X2\b", "", texto)
+        texto = re.sub(r"\b4X4\b", "", texto)
+        texto = re.sub(r"\b2WD\b", "", texto)
+        texto = re.sub(r"\b4WD\b", "", texto)
+        texto = re.sub(r"\bCC\b", "", texto)
+        texto = re.sub(r"\s+", " ", texto)
     return texto.strip()
+
+df_pesados = load_data("pes2026.csv")
+# Quitar puntos de la tasación
+for base in [df, df_pesados]:
+    if "Tasación 2026" in base.columns:
+        base["Tasación 2026"] = (
+            base["Tasación 2026"]
+            .astype(str)
+            .str.replace(".", "", regex=False)
+        )
+
+# Mover Tasación 2026 antes de País
+for base in [df, df_pesados]:
+    if (
+        "Tasación 2026" in base.columns
+        and "País" in base.columns
+    ):
+        columnas = base.columns.tolist()
+        columnas.remove("Tasación 2026")
+        indice = columnas.index("País")
+        columnas.insert(indice, "Tasación 2026")
+        base = base[columnas]
+        if base is df:
+            df = base
+        else:
+            df_pesados = base       
 # --- Estilos y título ---
 st.markdown(
     """
@@ -156,19 +197,16 @@ if st.button("Consultar patente", key="btn_patente"):
         # =====================================
 
         st.markdown("### 💰 Tasación SII")
-
-        # DEBUG (puedes borrarlo después)
         st.write("Código SII GetAPI:", codigo_sii)
         
         if not codigo_sii:
             st.warning(
                 "GetAPI no entregó Código SII. Buscando por Marca, Modelo y Año..."
             )
-                # ===========================
-                # Filtrar primero por Marca
-                # ===========================
-
-            resultado_api = df.copy()
+            resultado_api = pd.concat(
+                [df, df_pesados],
+                ignore_index=True
+            )
 
             if marca_api != "NO INFORMADA":
                 resultado_api = resultado_api[
@@ -181,10 +219,6 @@ if st.button("Consultar patente", key="btn_patente"):
                             or x in marca_api
                     )
 ]
-                # ===========================
-                # Filtrar por Año
-                # ===========================
-
             if anio_api:
                 resultado_api = resultado_api[
                     resultado_api.iloc[:,1]
@@ -192,11 +226,8 @@ if st.button("Consultar patente", key="btn_patente"):
                     .str.strip()
                     == anio_api
                     ]
-
-                # ===========================
-                # Buscar el modelo más parecido
-                # ===========================
-
+            st.session_state["resultado_patente"] = resultado_api.copy()
+            
             mejor_fila = None
             mejor_score = 0
 
@@ -218,22 +249,18 @@ if st.button("Consultar patente", key="btn_patente"):
                         texto_sii += " " + str(fila.iloc[i])
                 texto_sii = normalizar_texto(texto_sii)
 
-                score = similitud(texto_api, texto_sii)
+                score1 = similitud(texto_api, texto_sii)
+                score2 = similitud(modelo_api, fila.iloc[4])
+                score = max(score1, score2)
                 if score > mejor_score:
                     mejor_score = score
                     mejor_fila = fila.copy()
                     mejor_texto = texto_sii
 
-                
-            st.write("Texto GetAPI:", texto_api)
-            st.write("Mejor coincidencia:", mejor_texto)
-            st.write("Similitud:", round(mejor_score,3))
-
-
             if mejor_score >= 0.75:
                 st.success("Coincidencia exacta")
                 resultado_api = pd.DataFrame([mejor_fila])
-            elif mejor_score >= 0.60:
+            elif mejor_score >= 0.55:
                 st.warning(
                     f"Coincidencia aproximada ({mejor_score:.0%})"
                 )
@@ -249,6 +276,16 @@ if st.button("Consultar patente", key="btn_patente"):
                     "No se encontró ninguna coincidencia en la base SII."
                 )
             else:
+                if "Tasación 2026" in resultado_api.columns:
+                    cols = resultado_api.columns.tolist()
+                    cols.remove("Tasación 2026")
+                    # Insertar Tasación antes de País
+                    if "País" in cols:
+                        indice = cols.index("País")
+                    else:
+                        indice = cols.index("Pais")
+                    cols.insert(indice, "Tasación 2026")
+                    resultado_api = resultado_api[cols]
                 st.dataframe(
                     resultado_api.reset_index(drop=True),
                     use_container_width=True
@@ -262,6 +299,16 @@ if st.button("Consultar patente", key="btn_patente"):
                 == codigo_sii.upper()
             ]
 
+            # Si no existe en livianos, buscar en pesados
+            if resultado_api.empty:
+                resultado_api = df_pesados[
+                    df_pesados.iloc[:,0]
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    == codigo_sii.upper()
+                ]
+
             # Filtrar además por año
             resultado_api = resultado_api[
                 resultado_api.iloc[:, 1]
@@ -269,18 +316,49 @@ if st.button("Consultar patente", key="btn_patente"):
                 .str.strip()
                 == anio_api.strip()
             ]
-            st.write("Después de filtrar por año:")
-            st.dataframe(resultado_api)
-            st.write("Código buscado:", codigo_sii)
-            st.write("Año buscado:", anio_api)
-            st.write("Coincidencias por código:")
-            st.dataframe(resultado_api)
-
+            
             if len(resultado_api) == 0:
                 st.session_state["resultado_patente"] = resultado_api.copy()    
                 st.error(
                     "No se encontró ninguna coincidencia en la base SII."
             )
+            elif len(resultado_api) == 1:
+
+                st.success("Tasación encontrada.")
+                if "Tasación 2026" in resultado_api.columns:
+                    cols = resultado_api.columns.tolist()
+                    cols.remove("Tasación 2026")
+                    # Insertar Tasación antes de País
+                    if "País" in cols:
+                        indice = cols.index("País")
+                    else:
+                        indice = cols.index("Pais")
+                    cols.insert(indice, "Tasación 2026")
+                    resultado_api = resultado_api[cols]
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
+
+            else:
+
+                st.warning(
+                    f"Se encontraron {len(resultado_api)} coincidencias."
+                )
+                if "Tasación 2026" in resultado_api.columns:
+                    cols = resultado_api.columns.tolist()
+                    cols.remove("Tasación 2026")
+                    # Insertar Tasación antes de País
+                    if "País" in cols:
+                        indice = cols.index("País")
+                    else:
+                        indice = cols.index("Pais")
+                    cols.insert(indice, "Tasación 2026")
+                    resultado_api = resultado_api[cols]
+                st.dataframe(
+                    resultado_api.reset_index(drop=True),
+                    use_container_width=True
+                )
     except Exception as e:
         st.error(f"Error consultando GetAPI: {e}")
 st.divider()
