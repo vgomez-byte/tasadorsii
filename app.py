@@ -4,6 +4,14 @@ import pandas as pd
 import os
 from getapi_service import consultar_patente
 import re
+from difflib import SequenceMatcher
+
+def similitud(a, b):
+    return SequenceMatcher(
+        None,
+        normalizar_texto(a),
+        normalizar_texto(b)
+    ).ratio()
 
 st.set_page_config(page_title="Tasador SII", layout="wide")
 
@@ -37,6 +45,8 @@ def normalizar_texto(texto):
     texto = texto.replace("/", "")
     texto = texto.replace(".", "")
     texto = texto.replace(",", "")
+
+    texto = re.sub(r"\d+\.\d+", "", texto)
 
     texto = re.sub(r"\s+", " ", texto)
 
@@ -149,68 +159,14 @@ if st.button("Consultar patente", key="btn_patente"):
 
         # DEBUG (puedes borrarlo después)
         st.write("Código SII GetAPI:", codigo_sii)
+        
         if not codigo_sii:
             st.warning(
                 "GetAPI no entregó Código SII. Buscando por Marca, Modelo y Año..."
             )
-            
-            resultado_api = df.copy()
-            if marca_api != "NO INFORMADA":
-                resultado_api = resultado_api[
-                    resultado_api.iloc[:,3]
-                    .astype(str)
-                    .str.upper()
-                    .str.contains(marca_api, na=False)
-                ]
-            if modelo_api:
-                # Simplificar el modelo para mejorar coincidencias
-                modelo_busqueda = normalizar_texto(modelo_api)
-
-                # eliminar cilindradas tipo 1.6, 2.4, 3.0
-                modelo_busqueda = re.sub(r"\d+\.\d+", "", modelo_busqueda)
-
-                # eliminar palabras comunes
-                for palabra in [
-                    "4X2",
-                    "4X4",
-                    "2WD",
-                    "4WD",
-                    "MT",
-                    "AT",
-                    "CVT",
-                    "DCT",
-                    "DIESEL",
-                    "BENCINA",
-                    "TURBO"
-                ]:
-                    modelo_busqueda = modelo_busqueda.replace(palabra, "")
-
-                modelo_busqueda = " ".join(modelo_busqueda.split())
-
-                # Casos especiales
-                modelo_busqueda = (
-                    modelo_busqueda
-                    .replace("DMAX", "DMAX")
-                    .replace("DMAX4WD", "DMAX")
-                    .replace("NS160FI", "")
-                )
-
-            st.write("Modelo GetAPI:", modelo_api)
-            st.write("Modelo usado para buscar:", modelo_busqueda)
-
-            resultado_api = resultado_api[
-                resultado_api.iloc[:,4]
-                .astype(str)
-                .apply(normalizar_texto)
-                .apply(
-                    lambda x:
-                        modelo_busqueda in x
-                        or x in modelo_busqueda
-                )
-            ]
-            if len(resultado_api) == 0:
-
-                primer_modelo = modelo_busqueda.split()[0]
+                # ===========================
+                # Filtrar primero por Marca
+                # ===========================
 
             resultado_api = df.copy()
 
@@ -218,47 +174,81 @@ if st.button("Consultar patente", key="btn_patente"):
                 resultado_api = resultado_api[
                     resultado_api.iloc[:,3]
                     .astype(str)
-                    .str.upper()
-                    .str.contains(marca_api, na=False)
-                ]
-
-            resultado_api = resultado_api[
-                resultado_api.iloc[:,4]
-                .astype(str)
-                .apply(normalizar_texto)
-                .str.contains(primer_modelo, na=False)
-            ]
+                    .apply(normalizar_texto)
+                    .apply(
+                        lambda x:
+                            marca_api in x
+                            or x in marca_api
+                    )
+]
+                # ===========================
+                # Filtrar por Año
+                # ===========================
 
             if anio_api:
                 resultado_api = resultado_api[
                     resultado_api.iloc[:,1]
                     .astype(str)
+                    .str.strip()
                     == anio_api
-                ]
+                    ]
 
-                st.session_state["resultado_patente"] = resultado_api.copy()
+                # ===========================
+                # Buscar el modelo más parecido
+                # ===========================
 
+            mejor_fila = None
+            mejor_score = 0
+
+            texto_api = " ".join([
+                marca_api,
+                modelo_api,
+                version_api,
+                transmision_api,
+                combustible_api,
+                cc_api
+            ])
+
+            texto_api = normalizar_texto(texto_api)
+
+            for _, fila in resultado_api.iterrows():
+                texto_sii = ""
+                for i in [3,4,5,9,10,11,12]:
+                    if i < len(fila):
+                        texto_sii += " " + str(fila.iloc[i])
+                texto_sii = normalizar_texto(texto_sii)
+
+                score = similitud(texto_api, texto_sii)
+                if score > mejor_score:
+                    mejor_score = score
+                    mejor_fila = fila.copy()
+                    mejor_texto = texto_sii
+
+                
+            st.write("Texto GetAPI:", texto_api)
+            st.write("Mejor coincidencia:", mejor_texto)
+            st.write("Similitud:", round(mejor_score,3))
+
+
+            if mejor_score >= 0.75:
+                st.success("Coincidencia exacta")
+                resultado_api = pd.DataFrame([mejor_fila])
+            elif mejor_score >= 0.60:
+                st.warning(
+                    f"Coincidencia aproximada ({mejor_score:.0%})"
+                )
+                resultado_api = pd.DataFrame([mejor_fila])
+            else:
+                st.error(
+                    "No se encontró una coincidencia confiable."
+                )
+                resultado_api = pd.DataFrame()
+            st.session_state["resultado_patente"] = resultado_api.copy()
             if len(resultado_api) == 0:
-
                 st.error(
                     "No se encontró ninguna coincidencia en la base SII."
                 )
-
-            elif len(resultado_api) == 1:
-
-                st.success("Tasación encontrada.")
-
-                st.dataframe(
-                    resultado_api.reset_index(drop=True),
-                    use_container_width=True
-                )
-
             else:
-
-                st.warning(
-                    f"Se encontraron {len(resultado_api)} coincidencias."
-                )
-
                 st.dataframe(
                     resultado_api.reset_index(drop=True),
                     use_container_width=True
@@ -284,23 +274,6 @@ if st.button("Consultar patente", key="btn_patente"):
                 st.error(
                     "No se encontró ninguna coincidencia en la base SII."
             )
-            elif len(resultado_api) == 1:
-                st.success("Tasación encontrada.")
-                st.dataframe(
-                    resultado_api.reset_index(drop=True),
-                    use_container_width=True
-                )
-            else:
-                st.warning(
-                    f"Se encontraron {len(resultado_api)} coincidencias."
-                )
-                st.dataframe(
-                    resultado_api.reset_index(drop=True),
-                    use_container_width=True
-                )
-                st.info(
-                    "Utiliza los filtros manuales para refinar."
-                )
     except Exception as e:
         st.error(f"Error consultando GetAPI: {e}")
 st.divider()
