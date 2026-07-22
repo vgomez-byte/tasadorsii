@@ -153,9 +153,7 @@ st.markdown(
 st.markdown('<div class="big-title">Tasador Vehicular SII</div>', unsafe_allow_html=True)
 
 # CONSULTA AUTOMÁTICA POR PATENTE
-
 st.markdown("## Consulta por Patente")
-
 patente = st.text_input(
     "Ingrese patente",
     placeholder="Ej: SGXR43"
@@ -222,14 +220,6 @@ if st.button("Consultar patente", key="btn_patente"):
             st.metric("Combustible", combustible_api)
         with col6:
             st.metric("Transmisión", transmision_api)
-
-            #st.markdown("### Estado del vehículo")
-            #if robo_resultado:
-                #st.error("Vehículo con encargo por robo")
-                #if robo_fecha:
-                    #st.write("Fecha:", robo_fecha)
-            #else:
-                #st.success("Sin encargo por robo informado")
 
         st.markdown("### Tasación SII")
         st.write("Código SII GetAPI:", codigo_sii)
@@ -299,7 +289,7 @@ if st.button("Consultar patente", key="btn_patente"):
                         mejor_distinta = fila
             if mejor_misma is not None:
                 st.success(
-                    f"Mejor coincidencia ({score_misma} puntos)"
+                    f"Mejor coincidencia"
                 )
                 tabla = pd.DataFrame([mejor_misma])
 
@@ -321,7 +311,7 @@ if st.button("Consultar patente", key="btn_patente"):
                 )
             if mejor_distinta is not None:
                 st.warning(
-                    f"Otra posible coincidencia ({score_distinta} puntos)"
+                    f"Otra posible coincidencia"
                 )
                 tabla = pd.DataFrame([mejor_distinta])
 
