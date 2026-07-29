@@ -2,8 +2,8 @@ import os
 import requests
 import streamlit as st
 
-API_KEY = st.secrets["GETAPI_API_KEY"]
-BASE_URL = st.secrets["GETAPI_BASE_URL"]
+API_KEY=st.secrets["GETAPI_API_KEY"]
+BASE_URL=st.secrets["GETAPI_BASE_URL"]
 
 def consultar_patente(patente):
     url = f"{BASE_URL}/vehicles/plate/{patente}"
