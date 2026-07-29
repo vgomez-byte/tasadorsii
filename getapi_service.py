@@ -1,10 +1,9 @@
 import os
 import requests
-from dotenv import load_dotenv
+import streamlit as st
 
-load_dotenv()
-API_KEY = os.getenv("GETAPI_API_KEY")
-BASE_URL = os.getenv("GETAPI_BASE_URL")
+API_KEY = st.secrets["GETAPI_API_KEY"]
+BASE_URL = st.secrets["GETAPI_BASE_URL"]
 
 def consultar_patente(patente):
     url = f"{BASE_URL}/vehicles/plate/{patente}"
