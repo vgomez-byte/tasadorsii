@@ -46,6 +46,66 @@ def calcular_puntaje(api, fila):
             puntaje += 15
     return puntaje
 
+def buscar_mejores_coincidencias(api):
+    resultado = pd.concat(
+        [df, df_pesados],
+        ignore_index=True
+    )
+    # FILTRAR MARCA
+    if api["marca"] != "NO INFORMADA":
+        resultado = resultado[
+            resultado.iloc[:, 3]
+            .astype(str)
+            .apply(normalizar_texto)
+            .apply(
+                lambda x:
+                    normalizar_texto(api["marca"]) in x
+                    or x in normalizar_texto(api["marca"])
+            )
+        ]
+    # FILTRAR AÑO
+    if api["anio"]:
+        resultado = resultado[
+            resultado.iloc[:, 1]
+            .astype(str)
+            .str.strip()
+            == api["anio"]
+        ]
+    # FILTRAR MODELO
+    if api["modelo"]:
+        modelo_normalizado = normalizar_texto(api["modelo"])
+        resultado = resultado[
+            (
+                resultado.iloc[:, 4]
+                .astype(str)
+                .apply(normalizar_texto)
+                + " "
+                + resultado.iloc[:, 5]
+                .astype(str)
+                .apply(normalizar_texto)
+            ).str.contains(
+                modelo_normalizado,
+                na=False
+            )
+        ]
+    mejor_misma = None
+    score_misma = -1
+    mejor_distinta = None
+    score_distinta = -1
+    for _, fila in resultado.iterrows():
+        score = calcular_puntaje(api, fila)
+        transmision_sii = normalizar_texto(fila.iloc[10])
+        transmision_api = normalizar_texto(api["transmision"])
+        if transmision_sii == transmision_api:
+            if score > score_misma:
+                score_misma = score
+                mejor_misma = fila
+        else:
+            if score > score_distinta:
+                score_distinta = score
+                mejor_distinta = fila
+    return mejor_misma, score_misma, mejor_distinta, score_distinta
+
 st.set_page_config(page_title="Tasador SII", layout="wide")
 
 @st.cache_data
@@ -334,46 +394,77 @@ if st.button("Consultar patente", key="btn_patente"):
             if mejor_misma is None and mejor_distinta is None:
                 st.error(
                     "No se encontró ninguna coincidencia en la base SII."
-                )           
+                )   
         else:
-            resultado_api = df[
+            resultado_codigo = df[
                 df.iloc[:, 0]
                 .astype(str)
                 .str.strip()
                 .str.upper()
                 == codigo_sii.upper()
             ]
-
             # Si no existe en livianos, buscar en pesados
-            if resultado_api.empty:
-                resultado_api = df_pesados[
-                    df_pesados.iloc[:,0]
+            if resultado_codigo.empty:
+                resultado_codigo = df_pesados[
+                    df_pesados.iloc[:, 0]
                     .astype(str)
                     .str.strip()
                     .str.upper()
                     == codigo_sii.upper()
                 ]
-
-            # Filtrar además por año
-            resultado_api = resultado_api[
-                resultado_api.iloc[:, 1]
-                .astype(str)
-                .str.strip()
-                == anio_api.strip()
-            ]
-            
-            if len(resultado_api) == 0:
-                st.session_state["resultado_patente"] = resultado_api.copy()    
-                st.error(
-                    "No se encontró ninguna coincidencia en la base SII."
-            )
-            elif len(resultado_api) == 1:
-
+            # Filtrar por año
+            if not resultado_codigo.empty:
+                resultado_codigo = resultado_codigo[
+                    resultado_codigo.iloc[:, 1]
+                    .astype(str)
+                    .str.strip()
+                    == anio_api.strip()
+                ]
+            codigo_sii_valido = False
+            if not resultado_codigo.empty:
+                fila_codigo = resultado_codigo.iloc[0]
+                modelo_api_normalizado = normalizar_texto(modelo_api)
+                modelo_sii_normalizado = normalizar_texto(fila_codigo.iloc[4])
+                transmision_api_normalizada = normalizar_texto(
+                    transmision_api
+                )
+                transmision_sii_normalizada = normalizar_texto(
+                    fila_codigo.iloc[10]
+                )
+                combustible_api_normalizado = normalizar_texto(
+                    combustible_api
+                )
+                combustible_sii_normalizado = normalizar_texto(
+                    fila_codigo.iloc[9]
+                )
+                # Modelo
+                modelo_ok = (
+                    modelo_api_normalizado in modelo_sii_normalizado
+                    or modelo_sii_normalizado in modelo_api_normalizado
+                )
+                # Transmisión
+                transmision_ok = (
+                    not transmision_api_normalizada
+                    or transmision_api_normalizada
+                    == transmision_sii_normalizada
+                )
+                # Combustible
+                combustible_ok = (
+                    not combustible_api_normalizado
+                    or combustible_api_normalizado
+                    == combustible_sii_normalizado
+                )
+                codigo_sii_valido = (
+                    modelo_ok
+                    and transmision_ok
+                    and combustible_ok
+                )
+            if codigo_sii_valido:
+                resultado_api = resultado_codigo.copy()
                 st.success("Tasación encontrada.")
                 if "Tasación 2026" in resultado_api.columns:
                     cols = resultado_api.columns.tolist()
                     cols.remove("Tasación 2026")
-                    # Insertar Tasación antes de País
                     if "País" in cols:
                         indice = cols.index("País")
                     else:
@@ -384,26 +475,69 @@ if st.button("Consultar patente", key="btn_patente"):
                     resultado_api.reset_index(drop=True),
                     use_container_width=True
                 )
-
             else:
-
                 st.warning(
-                    f"Se encontraron {len(resultado_api)} coincidencias."
+                    "El Código SII entregado no coincide con "
+                    "las características del vehículo. "
+                    "Realizando búsqueda por características..."
                 )
-                if "Tasación 2026" in resultado_api.columns:
-                    cols = resultado_api.columns.tolist()
-                    cols.remove("Tasación 2026")
-                    # Insertar Tasación antes de País
-                    if "País" in cols:
-                        indice = cols.index("País")
-                    else:
-                        indice = cols.index("Pais")
-                    cols.insert(indice, "Tasación 2026")
-                    resultado_api = resultado_api[cols]
-                st.dataframe(
-                    resultado_api.reset_index(drop=True),
-                    use_container_width=True
-                )
+                api = {
+                    "marca": marca_api,
+                    "modelo": modelo_api,
+                    "anio": anio_api,
+                    "version": version_api,
+                    "transmision": transmision_api,
+                    "combustible": combustible_api,
+                    "cc": cc_api
+                }
+                (
+                    mejor_misma,
+                    score_misma,
+                    mejor_distinta,
+                    score_distinta
+                ) = buscar_mejores_coincidencias(api)
+                if mejor_misma is not None:
+                    st.success(
+                        f"Mejor coincidencia ({score_misma} puntos)"
+                    )
+                    tabla = pd.DataFrame([mejor_misma])
+                    if "Tasación 2026" in tabla.columns:
+                        cols = tabla.columns.tolist()
+                        cols.remove("Tasación 2026")
+                        if "País" in cols:
+                            indice = cols.index("País")
+                        else:
+                            indice = cols.index("Pais")
+                        cols.insert(indice, "Tasación 2026")
+                        tabla = tabla[cols]
+                    st.dataframe(
+                        tabla.reset_index(drop=True),
+                        use_container_width=True
+                    )
+                if mejor_distinta is not None:
+                    st.warning(
+                        f"Otra posible coincidencia "
+                        f"({score_distinta} puntos)"
+                    )
+                    tabla = pd.DataFrame([mejor_distinta])
+                    if "Tasación 2026" in tabla.columns:
+                        cols = tabla.columns.tolist()
+                        cols.remove("Tasación 2026")
+                        if "País" in cols:
+                            indice = cols.index("País")
+                        else:
+                            indice = cols.index("Pais")
+                        cols.insert(indice, "Tasación 2026")
+                        tabla = tabla[cols]
+                    st.dataframe(
+                        tabla.reset_index(drop=True),
+                        use_container_width=True
+                    )
+                if mejor_misma is None and mejor_distinta is None:
+                    st.error(
+                        "No se encontró ninguna coincidencia "
+                        "confiable en la base SII."
+                    )    
     except Exception as e:
         st.error(f"Error consultando GetAPI: {e}")
 st.divider()
