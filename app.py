@@ -6,45 +6,121 @@ import re
 
 def calcular_puntaje(api, fila):
     puntaje = 0
-
-    # MODELO
+    marca_api = normalizar_texto(api["marca"])
     modelo_api = normalizar_texto(api["modelo"])
     version_api = normalizar_texto(api["version"])
-    texto_api = f"{modelo_api} {version_api}"
+    marca_sii = normalizar_texto(fila.iloc[3])
     modelo_sii = normalizar_texto(fila.iloc[4])
     version_sii = normalizar_texto(fila.iloc[5])
-    texto_sii = f"{modelo_sii} {version_sii}"
-    for palabra in texto_api.split():
-        if len(palabra) <= 1:
-            continue
-        if palabra in texto_sii:
-            puntaje += 10
 
-
-    # TRANSMISION
-    if api["transmision"]:
-        if normalizar_texto(api["transmision"]) == normalizar_texto(fila.iloc[10]):
+    if marca_api and marca_api != "NO INFORMADA":
+        if marca_api == marca_sii:
             puntaje += 20
+    modelo_match = False
+    # Coincidencia directa
+    if modelo_api and modelo_sii:
+        if modelo_api == modelo_sii:
+            puntaje += 50
+            modelo_match = True
+        # Ejemplo H7L (API) vs H7 (SII)
+        elif modelo_api in modelo_sii or modelo_sii in modelo_api:
+            puntaje += 45
+            modelo_match = True
+        else:
+            palabras_api = [
+                p for p in modelo_api.split()
+                if len(p) > 1
+            ]
+            palabras_sii = [
+                p for p in modelo_sii.split()
+                if len(p) > 1
+            ]
+            coincidencias = 0
+            for palabra_api in palabras_api:
+                for palabra_sii in palabras_sii:
+                    if palabra_api == palabra_sii:
+                        coincidencias += 1
+                        break
+                    # H7L vs H7
+                    if (
+                        len(palabra_api) >= 2
+                        and len(palabra_sii) >= 2
+                        and (
+                            palabra_api.startswith(palabra_sii)
+                            or palabra_sii.startswith(palabra_api)
+                        )
+                    ):
+                        coincidencias += 1
+                        break
+                    # S PRESSO vs SPRESSO
+                    api_sin_espacios = modelo_api.replace(" ", "")
+                    sii_sin_espacios = modelo_sii.replace(" ", "")
+                    if (
+                        api_sin_espacios
+                        and sii_sin_espacios
+                        and (
+                            api_sin_espacios == sii_sin_espacios
+                            or api_sin_espacios in sii_sin_espacios
+                            or sii_sin_espacios in api_sin_espacios
+                        )
+                    ):
+                        coincidencias += 1
+                        break
+            if coincidencias >= 2:
+                puntaje += 45
+                modelo_match = True
+            elif coincidencias == 1:
+                puntaje += 25
+                modelo_match = True
 
-    # COMBUSTIBLE
-    if api["combustible"]:
-        if normalizar_texto(api["combustible"]) == normalizar_texto(fila.iloc[9]):
+        palabras_version_api = [
+            p for p in version_api.split()
+            if len(p) > 1
+        ]
+        palabras_version_sii = [
+            p for p in version_sii.split()
+            if len(p) > 1
+        ]
+        coincidencias_version = 0
+        for palabra in palabras_version_api:
+            if palabra in palabras_version_sii:
+                coincidencias_version += 1
+        if coincidencias_version >= 2:
+            puntaje += 20
+        elif coincidencias_version == 1:
             puntaje += 10
-
-    # CILINDRADA
-    if api["cc"]:
-        cc_api = api["cc"].replace(".", "").replace(",", "")
-        cc_sii = str(fila.iloc[7]).replace(".", "").replace(",", "")
-        if cc_api == cc_sii:
-            puntaje += 15
-
-    # TRACCION
-    if api["version"]:
-        if "4X4" in api["version"] and "4X4" in normalizar_texto(fila.iloc[12]):
-            puntaje += 15
-        if "4X2" in api["version"] and "4X2" in normalizar_texto(fila.iloc[12]):
-            puntaje += 15
-    return puntaje
+        transmision_api = normalizar_texto(api["transmision"])
+        transmision_sii = normalizar_texto(fila.iloc[10])
+        if transmision_api:
+            if transmision_api == transmision_sii:
+                puntaje += 20
+        combustible_api = normalizar_texto(api["combustible"])
+        combustible_sii = normalizar_texto(fila.iloc[9])
+        if combustible_api:
+            if combustible_api == combustible_sii:
+                puntaje += 10
+        if api["cc"]:
+            cc_api = (
+                str(api["cc"])
+                .replace(".", "")
+                .replace(",", "")
+            )
+            cc_sii = (
+                str(fila.iloc[7])
+                .replace(".", "")
+                .replace(",", "")
+            )
+            if cc_api == cc_sii:
+                puntaje += 15
+        if version_api:
+            traccion_sii = normalizar_texto(
+                fila.iloc[12]
+            )
+            if "4X4" in version_api and "4X4" in traccion_sii:
+                puntaje += 15
+            elif "4X2" in version_api and "4X2" in traccion_sii:
+                puntaje += 15
+        return puntaje
 
 def buscar_mejores_coincidencias(api):
     resultado = pd.concat(
@@ -72,21 +148,32 @@ def buscar_mejores_coincidencias(api):
             == api["anio"]
         ]
     # FILTRAR MODELO
+    # No descartamos por versión. Solo buscamos que el modelo base
+    # tenga alguna coincidencia razonable.
     if api["modelo"]:
-        modelo_normalizado = normalizar_texto(api["modelo"])
+        modelo_api = normalizar_texto(api["modelo"])
+        def modelo_coincide(fila):
+            modelo_sii = normalizar_texto(fila.iloc[4])
+            # Coincidencia directa
+            if modelo_api in modelo_sii or modelo_sii in modelo_api:
+                return True
+            # Comparar palabras del modelo
+            palabras_api = modelo_api.split()
+            for palabra in palabras_api:
+                if len(palabra) <= 1:
+                    continue
+                # Ejemplo: H7L (API) vs H7 (SII)
+                if palabra in modelo_sii:
+                    return True
+                if any(
+                    palabra.startswith(token) or token.startswith(palabra)
+                    for token in modelo_sii.split()
+                    if len(token) >= 2
+                ):
+                    return True
+            return False
         resultado = resultado[
-            (
-                resultado.iloc[:, 4]
-                .astype(str)
-                .apply(normalizar_texto)
-                + " "
-                + resultado.iloc[:, 5]
-                .astype(str)
-                .apply(normalizar_texto)
-            ).str.contains(
-                modelo_normalizado,
-                na=False
-            )
+            resultado.apply(modelo_coincide, axis=1)
         ]
     mejor_misma = None
     score_misma = -1
@@ -310,27 +397,14 @@ if st.button("Consultar patente", key="btn_patente"):
             texto_api = normalizar_texto(
                 f"{modelo_api} {version_api}"
             )
-
-            resultado_api = resultado_api[
-                (
-                    resultado_api.iloc[:,4]
-                    .astype(str)
-                    .apply(normalizar_texto)
-                    + " "
-                    + resultado_api.iloc[:,5]
-                    .astype(str)
-                    .apply(normalizar_texto)
-                ).str.contains(
-                    texto_api.split()[0],
-                    na=False
-                )
-            ]
             api = {
-            "modelo": modelo_api,
-            "version": version_api,
-            "transmision": transmision_api,
-            "combustible": combustible_api,
-            "cc": cc_api
+                "marca": marca_api,
+                "modelo": modelo_api,
+                "anio": anio_api,
+                "version": version_api,
+                "transmision": transmision_api,
+                "combustible": combustible_api,
+                "cc": cc_api
             }
             mejor_misma = None
             score_misma = -1
@@ -421,44 +495,59 @@ if st.button("Consultar patente", key="btn_patente"):
                     == anio_api.strip()
                 ]
             codigo_sii_valido = False
+
             if not resultado_codigo.empty:
-                fila_codigo = resultado_codigo.iloc[0]
-                modelo_api_normalizado = normalizar_texto(modelo_api)
-                modelo_sii_normalizado = normalizar_texto(fila_codigo.iloc[4])
-                transmision_api_normalizada = normalizar_texto(
-                    transmision_api
-                )
-                transmision_sii_normalizada = normalizar_texto(
-                    fila_codigo.iloc[10]
-                )
-                combustible_api_normalizado = normalizar_texto(
-                    combustible_api
-                )
-                combustible_sii_normalizado = normalizar_texto(
-                    fila_codigo.iloc[9]
-                )
-                # Modelo
-                modelo_ok = (
-                    modelo_api_normalizado in modelo_sii_normalizado
-                    or modelo_sii_normalizado in modelo_api_normalizado
-                )
-                # Transmisión
-                transmision_ok = (
-                    not transmision_api_normalizada
-                    or transmision_api_normalizada
-                    == transmision_sii_normalizada
-                )
-                # Combustible
-                combustible_ok = (
-                    not combustible_api_normalizado
-                    or combustible_api_normalizado
-                    == combustible_sii_normalizado
-                )
-                codigo_sii_valido = (
-                    modelo_ok
-                    and transmision_ok
-                    and combustible_ok
-                )
+                # Revisar todas las filas encontradas para ese Código SII
+                for _, fila_codigo in resultado_codigo.iterrows():
+                    modelo_api_normalizado = normalizar_texto(modelo_api)
+                    marca_sii_normalizada = normalizar_texto(
+                        fila_codigo.iloc[3]
+                    )
+                    modelo_sii_normalizado = normalizar_texto(
+                        fila_codigo.iloc[4]
+                    )
+                    version_sii_normalizada = normalizar_texto(
+                        fila_codigo.iloc[5]
+                    )
+                    texto_sii = (
+                        f"{marca_sii_normalizada} "
+                        f"{modelo_sii_normalizado} "
+                        f"{version_sii_normalizada}"
+                    )
+                    transmision_api_normalizada = normalizar_texto(
+                        transmision_api
+                    )
+                    transmision_sii_normalizada = normalizar_texto(
+                        fila_codigo.iloc[10]
+                    )
+                    combustible_api_normalizado = normalizar_texto(
+                        combustible_api
+                    )
+                    combustible_sii_normalizado = normalizar_texto(
+                        fila_codigo.iloc[9]
+                    )
+                    # Modelo
+                    palabras_modelo = modelo_api_normalizado.split()
+                    modelo_ok = all(
+                        palabra in texto_sii
+                        for palabra in palabras_modelo
+                        if len(palabra) > 1
+                    )
+                    # Transmisión
+                    transmision_ok = (
+                        not transmision_api_normalizada
+                        or transmision_api_normalizada
+                        == transmision_sii_normalizada
+                    )
+                    # Combustible
+                    combustible_ok = (
+                        not combustible_api_normalizado
+                        or combustible_api_normalizado
+                        == combustible_sii_normalizado
+                    )
+                    if modelo_ok and transmision_ok and combustible_ok:
+                        codigo_sii_valido = True
+                        break
             if codigo_sii_valido:
                 resultado_api = resultado_codigo.copy()
                 st.success("Tasación encontrada.")
