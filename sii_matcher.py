@@ -62,7 +62,14 @@ TOKENS_TRANSMISION = {"AT", "MT", "TA", "TM", "AUT", "AUTO", "AUTOMATICA", "AUTO
                       "MEC", "MECANICA", "MECANICO", "MANUAL", "CVT", "DCT", "DSG", "TIPTRONIC"}
 TOKENS_TRACCION = {"4X4", "4X2", "4WD", "2WD", "AWD", "FWD", "RWD", "6X4", "6X2", "8X4"}
 TOKENS_RUIDO = {"CC", "LTS", "LT", "L", "HP", "CV", "P", "PTAS", "PUERTAS", "SIN", "VERSION",
-                "C", "S", "A", "E", "DE", "Y", "CON"}
+                "C", "S", "A", "E", "DE", "Y", "CON", "NUEVO", "NUEVA", "USADO", "USADA"}
+
+
+def limpiar_texto_ficha(texto) -> str:
+    """Quita comentarios agregados en la ficha: 'CARGO + BATERÍA NUEVA' -> 'CARGO'."""
+    t = str(texto or "")
+    t = re.split(r"\+|\(", t, maxsplit=1)[0]
+    return t.strip()
 
 # Alias de marcas frecuentes (valor ya normalizado y sin espacios -> base SII)
 ALIAS_MARCA = {
@@ -303,7 +310,9 @@ def preparar_bases(path_livianos="sii_base.csv", path_pesados="pes2026.csv") -> 
     df["_version_t"] = [tokens_version(v) - m for v, m in zip(df[COL_VERSION], df["_modelo_t"])]
     df["_version_c"] = df[COL_VERSION].map(compacto)
     df["_comb"] = df[COL_COMB].map(canon_combustible)
-    df["_trans"] = df[COL_TRANS].map(canon_transmision)
+    # Transmisión de la columna; si viene vacía (común en pesados), se deduce de la versión ('AT', 'MT')
+    df["_trans"] = [canon_transmision(t) or transmision_desde_texto(v)
+                    for t, v in zip(df[COL_TRANS], df[COL_VERSION])]
     df["_trac"] = [traccion_desde_texto(a, b) for a, b in zip(df[COL_TRAC], df[COL_VERSION])]
     df["_cc"] = df[COL_CC].map(parse_cilindrada)
     df["_puertas"] = df[COL_PUERTAS].map(parse_entero)
@@ -341,6 +350,10 @@ class Vehiculo:
     traccion: str = ""
     puertas: str = ""
     codigo_sii: str = ""
+
+    def __post_init__(self):
+        self.modelo = limpiar_texto_ficha(self.modelo)
+        self.version = limpiar_texto_ficha(self.version)
 
     # --- valores canónicos derivados ---
     def c_marca(self):
@@ -413,12 +426,19 @@ def sim_modelo(modelo: str, fila) -> float:
     return r * 0.8 if r >= 0.7 else 0.0
 
 
-def sim_modelo_ext(modelo: str, fila, tok_modelo: frozenset) -> float:
+def sim_modelo_ext(modelo: str, fila, tok_modelo: frozenset, desc_t: frozenset = frozenset()) -> float:
     """
-    Como sim_modelo, pero además acepta que el modelo de la ficha aparezca en la
-    VERSIÓN SII (ej. ficha modelo 'Y3' vs SII modelo 'AEOLUS' versión 'Y3 AT CONFORT').
+    Como sim_modelo, pero además acepta:
+      * que el modelo de la ficha aparezca en la VERSIÓN SII
+        (ficha 'Y3' vs SII modelo 'AEOLUS' versión 'Y3 AT CONFORT');
+      * que el modelo SII esté contenido en modelo + versión de la ficha
+        (SII 'C-1119' vs ficha modelo 'CARGO' versión '1119').
     """
     s = sim_modelo(modelo, fila)
+    sii_sig = {t for t in fila["_modelo_t"]
+               if (t.isdigit() and len(t) >= 2) or (len(t) >= 3 and not re.fullmatch(r"\d+\.\d+", t))}
+    if sii_sig and desc_t and sii_sig <= desc_t:
+        s = max(s, 0.85)
     if s < 0.6 and tok_modelo and (tok_modelo & fila["_version_t"]):
         return 0.6
     return s
@@ -439,7 +459,7 @@ def sim_version(desc_tokens: frozenset, ver_c: str, fila):
         return None
     f_t = fila["_version_t"]
     if not f_t:
-        return 0.0
+        return None          # la fila SII no trae versión (ej. 'SIN VERSION'): no se puede comparar
     comunes = ver_tokens & f_t
     # Coincidencias parciales de códigos (ej. 'GLS' vs 'GLSA', 'EG10' vs 'EG10A')
     parciales = sum(
@@ -494,7 +514,7 @@ def _puntuar(v: Vehiculo, fila, pre) -> tuple[float, dict]:
         posible += PESOS[nombre]
 
     sumar("marca", sim_marca(pre["marca"], fila["_marca_c"]) if pre["marca"] else None)
-    sumar("modelo", sim_modelo_ext(v.modelo, fila, pre["mod_t"]) if pre["modelo"] else None)
+    sumar("modelo", sim_modelo_ext(v.modelo, fila, pre["mod_t"], pre["desc_t"]) if pre["modelo"] else None)
     sumar("version", sim_version(pre["desc_t"], pre["ver_c"], fila))
     if pre["trans"] and fila["_trans"]:
         sumar("transmision", 1.0 if pre["trans"] == fila["_trans"] else 0.0)
@@ -582,7 +602,7 @@ def buscar_por_caracteristicas(base: pd.DataFrame, v: Vehiculo, top: int = 10) -
             advertencias.append(f"La marca '{v.marca}' se interpretó como '{marca_sii.iloc[0]}' (equivalencia de marcas).")
 
     def filtrar_modelo(df, minimo):
-        sims = df.apply(lambda f: sim_modelo_ext(v.modelo, f, pre["mod_t"]), axis=1)
+        sims = df.apply(lambda f: sim_modelo_ext(v.modelo, f, pre["mod_t"], pre["desc_t"]), axis=1)
         return df[sims >= minimo]
 
     # 1) Marca + modelo
@@ -591,7 +611,17 @@ def buscar_por_caracteristicas(base: pd.DataFrame, v: Vehiculo, top: int = 10) -
     cand = filtrar_modelo(por_marca, 0.5) if not por_marca.empty else por_marca
     respaldo = False
 
-    # 2) Respaldo: buscar el modelo en TODAS las marcas (marca mal escrita o con otro nombre)
+    # La marca existe pero el modelo no: se informan los modelos disponibles de esa marca
+    if cand.empty and not por_marca.empty:
+        modelos = por_marca[COL_MODELO].value_counts().index.tolist()
+        return Resultado(
+            "sin_resultado",
+            f"No se encontró el modelo '{v.modelo}' de {v.marca} año {anio} en la base SII. "
+            f"Modelos {v.marca.upper()} {anio} disponibles: {', '.join(sorted(modelos)[:25])}"
+            f"{' …' if len(modelos) > 25 else ''}. Revise si el modelo está en el campo Versión.",
+            advertencias=advertencias)
+
+    # 2) Respaldo: la marca no existe; buscar el modelo en TODAS las marcas
     if cand.empty:
         claves = [t for t in pre["mod_t"] if len(t) >= 2 and not t.isdigit()]
         if claves:
@@ -629,12 +659,12 @@ def buscar_por_caracteristicas(base: pd.DataFrame, v: Vehiculo, top: int = 10) -
         ", ".join(f"{k} {val}%" for k, val in d.items()) for d in detalles
     ]
     # Datos de la ficha que no calzan con NINGUNA versión del modelo: probablemente vienen mal
-    columnas = {"cilindrada": COL_CC, "combustible": COL_COMB, "transmision": COL_TRANS}
+    columnas = {"cilindrada": COL_CC, "combustible": COL_COMB, "transmision": "_trans"}
     for campo, nombre, valor in [("cilindrada", "cilindrada", v.cilindrada),
                                  ("combustible", "combustible", v.combustible),
                                  ("transmision", "transmisión", v.transmision)]:
         vals = [d[campo] for d in detalles if campo in d]
-        if vals and max(vals) == 0:
+        if vals and len(vals) == len(detalles) and max(vals) == 0:
             valores_sii = sorted(set(cand[columnas[campo]]) - {""})
             advertencias.append(
                 f"La {nombre} de la ficha ({valor or 'deducida de la versión'}) no coincide con ninguna "
@@ -684,7 +714,7 @@ def validar_codigo(base: pd.DataFrame, v: Vehiculo) -> Resultado | None:
     conflictos = []
     if pre["marca"] and sim_marca(pre["marca"], fila["_marca_c"]) == 0:
         conflictos.append("marca")
-    if pre["modelo"] and sim_modelo_ext(v.modelo, fila, pre["mod_t"]) < 0.5:
+    if pre["modelo"] and sim_modelo_ext(v.modelo, fila, pre["mod_t"], pre["desc_t"]) < 0.5:
         conflictos.append("modelo")
     if pre["trans"] and fila["_trans"] and pre["trans"] != fila["_trans"]:
         conflictos.append("transmisión")
