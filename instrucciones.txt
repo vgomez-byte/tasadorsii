@@ -1,4 +1,12 @@
 python -m venv .venv
 .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
 python -m streamlit run app.py
+
+Archivos:
+  app.py            Interfaz Streamlit (patente GetAPI, pegar ficha MAIA, formulario y resultado)
+  sii_matcher.py    Motor de búsqueda: normalización, validación de Código SII y puntaje
+  ficha_maia.py     Campos y opciones de la ficha Detalle de MAIA, lectura del texto pegado
+  getapi_service.py Consulta de patente a GetAPI (usa .streamlit/secrets.toml)
+  *_original_backup.py  Versiones anteriores, por si hay que comparar

@@ -1,632 +1,253 @@
-import streamlit as st
 import pandas as pd
-import os
-from getapi_service import consultar_patente
-import re
+import requests
+import streamlit as st
 
-def calcular_puntaje(api, fila):
-    puntaje = 0
-    marca_api = normalizar_texto(api["marca"])
-    modelo_api = normalizar_texto(api["modelo"])
-    version_api = normalizar_texto(api["version"])
-    marca_sii = normalizar_texto(fila.iloc[3])
-    modelo_sii = normalizar_texto(fila.iloc[4])
-    version_sii = normalizar_texto(fila.iloc[5])
-
-    if marca_api and marca_api != "NO INFORMADA":
-        if marca_api == marca_sii:
-            puntaje += 20
-    modelo_match = False
-    # Coincidencia directa
-    if modelo_api and modelo_sii:
-        if modelo_api == modelo_sii:
-            puntaje += 50
-            modelo_match = True
-        # Ejemplo H7L (API) vs H7 (SII)
-        elif modelo_api in modelo_sii or modelo_sii in modelo_api:
-            puntaje += 45
-            modelo_match = True
-        else:
-            palabras_api = [
-                p for p in modelo_api.split()
-                if len(p) > 1
-            ]
-            palabras_sii = [
-                p for p in modelo_sii.split()
-                if len(p) > 1
-            ]
-            coincidencias = 0
-            for palabra_api in palabras_api:
-                for palabra_sii in palabras_sii:
-                    if palabra_api == palabra_sii:
-                        coincidencias += 1
-                        break
-                    # H7L vs H7
-                    if (
-                        len(palabra_api) >= 2
-                        and len(palabra_sii) >= 2
-                        and (
-                            palabra_api.startswith(palabra_sii)
-                            or palabra_sii.startswith(palabra_api)
-                        )
-                    ):
-                        coincidencias += 1
-                        break
-                    # S PRESSO vs SPRESSO
-                    api_sin_espacios = modelo_api.replace(" ", "")
-                    sii_sin_espacios = modelo_sii.replace(" ", "")
-                    if (
-                        api_sin_espacios
-                        and sii_sin_espacios
-                        and (
-                            api_sin_espacios == sii_sin_espacios
-                            or api_sin_espacios in sii_sin_espacios
-                            or sii_sin_espacios in api_sin_espacios
-                        )
-                    ):
-                        coincidencias += 1
-                        break
-            if coincidencias >= 2:
-                puntaje += 45
-                modelo_match = True
-            elif coincidencias == 1:
-                puntaje += 25
-                modelo_match = True
-
-        palabras_version_api = [
-            p for p in version_api.split()
-            if len(p) > 1
-        ]
-        palabras_version_sii = [
-            p for p in version_sii.split()
-            if len(p) > 1
-        ]
-        coincidencias_version = 0
-        for palabra in palabras_version_api:
-            if palabra in palabras_version_sii:
-                coincidencias_version += 1
-        if coincidencias_version >= 2:
-            puntaje += 20
-        elif coincidencias_version == 1:
-            puntaje += 10
-        transmision_api = normalizar_texto(api["transmision"])
-        transmision_sii = normalizar_texto(fila.iloc[10])
-        if transmision_api:
-            if transmision_api == transmision_sii:
-                puntaje += 20
-        combustible_api = normalizar_texto(api["combustible"])
-        combustible_sii = normalizar_texto(fila.iloc[9])
-        if combustible_api:
-            if combustible_api == combustible_sii:
-                puntaje += 10
-        if api["cc"]:
-            cc_api = (
-                str(api["cc"])
-                .replace(".", "")
-                .replace(",", "")
-            )
-            cc_sii = (
-                str(fila.iloc[7])
-                .replace(".", "")
-                .replace(",", "")
-            )
-            if cc_api == cc_sii:
-                puntaje += 15
-        if version_api:
-            traccion_sii = normalizar_texto(
-                fila.iloc[12]
-            )
-            if "4X4" in version_api and "4X4" in traccion_sii:
-                puntaje += 15
-            elif "4X2" in version_api and "4X2" in traccion_sii:
-                puntaje += 15
-        return puntaje
-
-def buscar_mejores_coincidencias(api):
-    resultado = pd.concat(
-        [df, df_pesados],
-        ignore_index=True
-    )
-    # FILTRAR MARCA
-    if api["marca"] != "NO INFORMADA":
-        resultado = resultado[
-            resultado.iloc[:, 3]
-            .astype(str)
-            .apply(normalizar_texto)
-            .apply(
-                lambda x:
-                    normalizar_texto(api["marca"]) in x
-                    or x in normalizar_texto(api["marca"])
-            )
-        ]
-    # FILTRAR AÑO
-    if api["anio"]:
-        resultado = resultado[
-            resultado.iloc[:, 1]
-            .astype(str)
-            .str.strip()
-            == api["anio"]
-        ]
-    # FILTRAR MODELO
-    # No descartamos por versión. Solo buscamos que el modelo base
-    # tenga alguna coincidencia razonable.
-    if api["modelo"]:
-        modelo_api = normalizar_texto(api["modelo"])
-        def modelo_coincide(fila):
-            modelo_sii = normalizar_texto(fila.iloc[4])
-            # Coincidencia directa
-            if modelo_api in modelo_sii or modelo_sii in modelo_api:
-                return True
-            # Comparar palabras del modelo
-            palabras_api = modelo_api.split()
-            for palabra in palabras_api:
-                if len(palabra) <= 1:
-                    continue
-                # Ejemplo: H7L (API) vs H7 (SII)
-                if palabra in modelo_sii:
-                    return True
-                if any(
-                    palabra.startswith(token) or token.startswith(palabra)
-                    for token in modelo_sii.split()
-                    if len(token) >= 2
-                ):
-                    return True
-            return False
-        resultado = resultado[
-            resultado.apply(modelo_coincide, axis=1)
-        ]
-    mejor_misma = None
-    score_misma = -1
-    mejor_distinta = None
-    score_distinta = -1
-    for _, fila in resultado.iterrows():
-        score = calcular_puntaje(api, fila)
-        transmision_sii = normalizar_texto(fila.iloc[10])
-        transmision_api = normalizar_texto(api["transmision"])
-        if transmision_sii == transmision_api:
-            if score > score_misma:
-                score_misma = score
-                mejor_misma = fila
-        else:
-            if score > score_distinta:
-                score_distinta = score
-                mejor_distinta = fila
-    return mejor_misma, score_misma, mejor_distinta, score_distinta
+import sii_matcher as sm
+from ficha_maia import (
+    CAMPOS, OPCIONES_MAIA, ficha_desde_getapi, normalizar_ficha, parsear_texto_maia,
+)
+from getapi_service import GetAPIConfigError, consultar_patente
 
 st.set_page_config(page_title="Tasador SII", layout="wide")
 
-@st.cache_data
-def load_data(path="sii_base.csv"):
-    # detectar la fila del encabezado buscando "Código SII"
-    header_row = 0
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{path} no existe")
-    with open(path, "r", encoding="utf-8-sig") as f:
-        for i, line in enumerate(f):
-            if "Código SII" in line or "Codigo SII" in line or "Codigo" in line:
-                header_row = i
-                break
-
-    # leer usando la fila detectada como header
-    df = pd.read_csv(path, header=header_row, dtype=str, encoding="utf-8-sig")
-    # marcar celdas vacías como NA y eliminar columnas totalmente vacías
-    df = df.replace(r'^\s*$', pd.NA, regex=True)
-    df = df.dropna(axis=1, how='all')
-    # volver a rellenar NA con cadena vacía para evitar problemas en UI
-    df = df.fillna("")
-    return df
-
-df = load_data()
-def normalizar_texto(texto):
-    texto = str(texto).upper()
-    reemplazos = {
-        "C/": "CARGA ",
-        "PLANA": "PLANA ",
-        "CPLANA": "CARGA PLANA",
-        "C/PLANA": "CARGA PLANA",
-        "CHASIS": "",
-        "CABINA": "",
-        "MECÁNICA": "MECANICA",
-        "AUTOMÁTICA": "AUTOMATICA",
-        "DC":"DOBLE CABINA",
-        "DOBLE CAB": "DOBLE CABINA",
-        "C/PLANA": "CARGA PLANA",
-        "CARGA PLANA": "CARGA PLANA",
-    }
-    for viejo, nuevo in reemplazos.items():
-        texto = texto.replace(viejo, nuevo)
-    texto = (
-        texto.replace("Á", "A")
-             .replace("É", "E")
-             .replace("Í", "I")
-             .replace("Ó", "O")
-             .replace("Ú", "U")
-             .replace("Ü", "U")
-    )
-    texto = re.sub(r"\bAT\b", "AUTOMATICA", texto)
-    texto = re.sub(r"\bMT\b", "MECANICA", texto)
-    texto = texto.replace("-", "")
-    texto = texto.replace("/", "")
-    texto = texto.replace(".", "")
-    texto = texto.replace(",", "")
-    texto = re.sub(r"\d+\.\d+", "", texto)
-    texto = re.sub(r"\b4X2\b", "", texto)
-    texto = re.sub(r"\b4X4\b", "", texto)
-    texto = re.sub(r"\b2WD\b", "", texto)
-    texto = re.sub(r"\b4WD\b", "", texto)
-    texto = re.sub(r"\bCC\b", "", texto)
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
-
-df_pesados = load_data("pes2026.csv")
-# Quitar puntos de la tasación
-for base in [df, df_pesados]:
-    if "Tasación 2026" in base.columns:
-        base["Tasación 2026"] = (
-            base["Tasación 2026"]
-            .astype(str)
-            .str.replace(".", "", regex=False)
-        )
-
-# Mover Tasación 2026 antes de País
-for base in [df, df_pesados]:
-    if (
-        "Tasación 2026" in base.columns
-        and "País" in base.columns
-    ):
-        columnas = base.columns.tolist()
-        columnas.remove("Tasación 2026")
-        indice = columnas.index("País")
-        columnas.insert(indice, "Tasación 2026")
-        base = base[columnas]
-        if base is df:
-            df = base
-        else:
-            df_pesados = base       
-# --- Estilos y título ---
 st.markdown(
     """
     <style>
     .stApp { background-color: #0b0f14; color: #e6eef6; }
     .big-title { font-size:34px; font-weight:700; margin-bottom:8px; color:#ffffff; }
     .subtle { color: #9aa6b2; }
-    .stButton>button { background-color: #1f6feb; }
-    .metric { background: rgba(255,255,255,0.03); padding:10px; border-radius:8px; }
+    .stButton>button { background-color: #1f6feb; color: #ffffff; }
+    .valor-card { background: rgba(255,255,255,0.03); border: 1px solid #1f2937;
+                  border-radius: 10px; padding: 14px 18px; }
+    .valor-label { color:#9aa6b2; font-size:14px; font-weight:600; }
+    .valor-num { color:#ffffff; font-size:28px; font-weight:700; }
+    .badge { display:inline-block; padding:2px 10px; border-radius:12px; font-weight:600; font-size:13px; }
+    .alta { background:#0f5132; color:#d1e7dd; }
+    .media { background:#664d03; color:#fff3cd; }
+    .baja { background:#842029; color:#f8d7da; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="big-title">Tasador Vehicular SII</div>', unsafe_allow_html=True)
 
-# CONSULTA AUTOMÁTICA POR PATENTE
-st.markdown("## Consulta por Patente")
-patente = st.text_input(
-    "Ingrese patente",
-    placeholder="Ej: SGXR43"
-).upper().replace("-", "").strip()
+# ---------------------------------------------------------------------------
+# Datos
+# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Cargando bases SII (solo la primera vez)...")
+def cargar_bases():
+    return sm.preparar_bases("sii_base.csv", "pes2026.csv")
 
-if st.button("Consultar patente", key="btn_patente"):
+
+try:
+    BASE = cargar_bases()
+except Exception as e:  # archivo faltante o mal formado
+    st.error(f"No fue posible cargar las bases SII: {e}")
+    st.stop()
+
+
+def clave(campo):
+    return f"f_{campo}"
+
+
+def cargar_en_formulario(datos: dict, sobrescribir: bool = True):
+    """Deja los datos en el formulario (antes de dibujar los widgets)."""
+    for campo, valor in datos.items():
+        if campo not in CAMPOS:
+            continue
+        if sobrescribir or not st.session_state.get(clave(campo)):
+            st.session_state[clave(campo)] = str(valor)
+    st.session_state.pop("resultado", None)
+
+
+def pesos(n) -> str:
     try:
-        datos = consultar_patente(patente)
-        #st.json(datos)  # Mostrar datos crudos para debug
-        data = datos.get("data", {})
-        codigo_sii = str(data.get("codeSii") or "").strip()
-        # Marca
-        marca_api = ""
-        # Caso 1: brand viene directo en data
-        if isinstance(data.get("brand"), dict):
-            marca_api = str(
-                data.get("brand", {}).get("name") or ""
-            ).upper().strip()
-    # Caso 2: brand viene dentro del modelo
-        if not marca_api:
-            marca_api = str(
-                (
-                    data.get("model", {})
-                    .get("brand", {})
-                    .get("name")
-                ) or ""
-            ).upper().strip()
-    # Caso 3: si viene como texto
-        if not marca_api:
-            marca_api = str(data.get("brand") or "").upper().strip()
-    # Fallback
-        if not marca_api:
-            marca_api = "NO INFORMADA"
-        modelo_api = str(
-            (data.get("model") or {}).get("name") or ""
-        ).upper().strip()
+        return "$" + f"{int(n):,}".replace(",", ".")
+    except (TypeError, ValueError):
+        return "—"
 
-        anio_api = str(data.get("year") or "").strip()
-        version_api = str(data.get("version") or "").upper().strip()
-        combustible_api = str(data.get("fuel") or "").upper().strip()
-        transmision_api = str(
-            data.get("transmission") or ""
-        ).upper().strip()
-        cc_api = str(data.get("engine") or "").strip()
-        robo_resultado = data.get("rtResult")
-        robo_fecha = data.get("rtDate")
-        st.success("Vehículo encontrado")
 
-        # Autocompletar filtros manuales
-        st.session_state["marca"] = marca_api
-        st.session_state["modelo"] = modelo_api
-        st.session_state["anio"] = anio_api
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Marca", marca_api)
-        with col2:
-            st.metric("Modelo", modelo_api)
-        with col3:
-            st.metric("Año", anio_api)
-        col4, col5, col6 = st.columns(3)
-        with col4:
-            st.metric("Versión", version_api)
-        with col5:
-            st.metric("Combustible", combustible_api)
-        with col6:
-            st.metric("Transmisión", transmision_api)
+# Aplicar cargas pendientes (desde patente o texto pegado) antes de crear widgets
+if "pendiente" in st.session_state:
+    datos, sobrescribir = st.session_state.pop("pendiente")
+    cargar_en_formulario(datos, sobrescribir)
 
-        st.markdown("### Tasación SII")
-        st.write("Código SII GetAPI:", codigo_sii)
-        
-        if not codigo_sii:
-            resultado_api = pd.concat(
-                [df, df_pesados],
-                ignore_index=True
-            )
+st.markdown('<div class="big-title">Tasador Vehicular SII</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtle">Busca el Código SII y la Tasación Fiscal usando los datos de la '
+    "ficha Detalle de MAIA. Puede partir por la patente (GetAPI), pegar el texto de la "
+    "ficha o escribir los datos directamente.</div>",
+    unsafe_allow_html=True,
+)
+st.write("")
 
-            if marca_api != "NO INFORMADA":
-                resultado_api = resultado_api[
-                    resultado_api.iloc[:,3]
-                    .astype(str)
-                    .apply(normalizar_texto)
-                    .apply(
-                        lambda x:
-                            marca_api in x
-                            or x in marca_api
-                    )]  
-            if anio_api:
-                resultado_api = resultado_api[
-                    resultado_api.iloc[:,1]
-                    .astype(str)
-                    .str.strip()
-                    == anio_api
-                    ]  
-            texto_api = normalizar_texto(
-                f"{modelo_api} {version_api}"
-            )
-            api = {
-                "marca": marca_api,
-                "modelo": modelo_api,
-                "anio": anio_api,
-                "version": version_api,
-                "transmision": transmision_api,
-                "combustible": combustible_api,
-                "cc": cc_api
-            }
-            mejor_misma = None
-            score_misma = -1
-            mejor_distinta = None
-            score_distinta = -1
-            for _, fila in resultado_api.iterrows():
-                score = calcular_puntaje(api, fila)
-                transmision_sii = normalizar_texto(fila.iloc[10])
-                if transmision_sii == normalizar_texto(transmision_api):
-                    if score > score_misma:
-                        score_misma = score
-                        mejor_misma = fila
-                else:
-                    if score > score_distinta:
-                        score_distinta = score
-                        mejor_distinta = fila
-            if mejor_misma is not None:
-                st.success(
-                    f"Mejor coincidencia"
-                )
-                tabla = pd.DataFrame([mejor_misma])
+# ---------------------------------------------------------------------------
+# 1. Fuentes de datos
+# ---------------------------------------------------------------------------
+tab_patente, tab_pegar = st.tabs(["Consultar patente (GetAPI)", "Pegar ficha Detalle de MAIA"])
 
-                if "Tasación 2026" in tabla.columns:
-                    cols = tabla.columns.tolist()
-                    cols.remove("Tasación 2026")
-
-                    if "País" in cols:
-                        indice = cols.index("País")
-                    else:
-                        indice = cols.index("Pais")
-
-                    cols.insert(indice, "Tasación 2026")
-                    tabla = tabla[cols]
-
-                st.dataframe(
-                    tabla.reset_index(drop=True),
-                    use_container_width=True
-                )
-            if mejor_distinta is not None:
-                st.warning(
-                    f"Otra posible coincidencia"
-                )
-                tabla = pd.DataFrame([mejor_distinta])
-
-                if "Tasación 2026" in tabla.columns:
-                    cols = tabla.columns.tolist()
-                    cols.remove("Tasación 2026")
-
-                    if "País" in cols:
-                        indice = cols.index("País")
-                    else:
-                        indice = cols.index("Pais")
-
-                    cols.insert(indice, "Tasación 2026")
-                    tabla = tabla[cols]
-
-                st.dataframe(
-                    tabla.reset_index(drop=True),
-                    use_container_width=True
-                )
-            if mejor_misma is None and mejor_distinta is None:
-                st.error(
-                    "No se encontró ninguna coincidencia en la base SII."
-                )   
-        else:
-            resultado_codigo = df[
-                df.iloc[:, 0]
-                .astype(str)
-                .str.strip()
-                .str.upper()
-                == codigo_sii.upper()
-            ]
-            # Si no existe en livianos, buscar en pesados
-            if resultado_codigo.empty:
-                resultado_codigo = df_pesados[
-                    df_pesados.iloc[:, 0]
-                    .astype(str)
-                    .str.strip()
-                    .str.upper()
-                    == codigo_sii.upper()
-                ]
-            # Filtrar por año
-            if not resultado_codigo.empty:
-                resultado_codigo = resultado_codigo[
-                    resultado_codigo.iloc[:, 1]
-                    .astype(str)
-                    .str.strip()
-                    == anio_api.strip()
-                ]
-            codigo_sii_valido = False
-
-            if not resultado_codigo.empty:
-                # Revisar todas las filas encontradas para ese Código SII
-                for _, fila_codigo in resultado_codigo.iterrows():
-                    modelo_api_normalizado = normalizar_texto(modelo_api)
-                    marca_sii_normalizada = normalizar_texto(
-                        fila_codigo.iloc[3]
-                    )
-                    modelo_sii_normalizado = normalizar_texto(
-                        fila_codigo.iloc[4]
-                    )
-                    version_sii_normalizada = normalizar_texto(
-                        fila_codigo.iloc[5]
-                    )
-                    texto_sii = (
-                        f"{marca_sii_normalizada} "
-                        f"{modelo_sii_normalizado} "
-                        f"{version_sii_normalizada}"
-                    )
-                    transmision_api_normalizada = normalizar_texto(
-                        transmision_api
-                    )
-                    transmision_sii_normalizada = normalizar_texto(
-                        fila_codigo.iloc[10]
-                    )
-                    combustible_api_normalizado = normalizar_texto(
-                        combustible_api
-                    )
-                    combustible_sii_normalizado = normalizar_texto(
-                        fila_codigo.iloc[9]
-                    )
-                    # Modelo
-                    palabras_modelo = modelo_api_normalizado.split()
-                    modelo_ok = all(
-                        palabra in texto_sii
-                        for palabra in palabras_modelo
-                        if len(palabra) > 1
-                    )
-                    # Transmisión
-                    transmision_ok = (
-                        not transmision_api_normalizada
-                        or transmision_api_normalizada
-                        == transmision_sii_normalizada
-                    )
-                    # Combustible
-                    combustible_ok = (
-                        not combustible_api_normalizado
-                        or combustible_api_normalizado
-                        == combustible_sii_normalizado
-                    )
-                    if modelo_ok and transmision_ok and combustible_ok:
-                        codigo_sii_valido = True
-                        break
-            if codigo_sii_valido:
-                resultado_api = resultado_codigo.copy()
-                st.success("Tasación encontrada.")
-                if "Tasación 2026" in resultado_api.columns:
-                    cols = resultado_api.columns.tolist()
-                    cols.remove("Tasación 2026")
-                    if "País" in cols:
-                        indice = cols.index("País")
-                    else:
-                        indice = cols.index("Pais")
-                    cols.insert(indice, "Tasación 2026")
-                    resultado_api = resultado_api[cols]
-                st.dataframe(
-                    resultado_api.reset_index(drop=True),
-                    use_container_width=True
-                )
+with tab_patente:
+    c1, c2 = st.columns([3, 1])
+    patente = c1.text_input("Patente", placeholder="Ej: SGXR43", key="patente")
+    patente = patente.upper().replace("-", "").replace(" ", "").strip()
+    solo_vacios = c2.checkbox(
+        "Solo completar vacíos", value=False,
+        help="Si está marcado, no reemplaza datos que ya estén en el formulario (por ejemplo, los pegados desde MAIA).",
+    )
+    consultar = st.button("Consultar patente", key="btn_patente")
+    if consultar and not patente:
+        st.warning("Ingrese una patente.")
+    elif consultar:
+        try:
+            with st.spinner("Consultando GetAPI..."):
+                ficha = ficha_desde_getapi(consultar_patente(patente))
+            if not ficha:
+                st.warning("GetAPI no devolvió datos para esa patente.")
             else:
-                st.warning(
-                    "El Código SII entregado no coincide con "
-                    "las características del vehículo. "
-                    "Realizando búsqueda por características..."
-                )
-                api = {
-                    "marca": marca_api,
-                    "modelo": modelo_api,
-                    "anio": anio_api,
-                    "version": version_api,
-                    "transmision": transmision_api,
-                    "combustible": combustible_api,
-                    "cc": cc_api
-                }
-                (
-                    mejor_misma,
-                    score_misma,
-                    mejor_distinta,
-                    score_distinta
-                ) = buscar_mejores_coincidencias(api)
-                if mejor_misma is not None:
-                    st.success(
-                        f"Mejor coincidencia ({score_misma} puntos)"
-                    )
-                    tabla = pd.DataFrame([mejor_misma])
-                    if "Tasación 2026" in tabla.columns:
-                        cols = tabla.columns.tolist()
-                        cols.remove("Tasación 2026")
-                        if "País" in cols:
-                            indice = cols.index("País")
-                        else:
-                            indice = cols.index("Pais")
-                        cols.insert(indice, "Tasación 2026")
-                        tabla = tabla[cols]
-                    st.dataframe(
-                        tabla.reset_index(drop=True),
-                        use_container_width=True
-                    )
-                if mejor_distinta is not None:
-                    st.warning(
-                        f"Otra posible coincidencia "
-                        f"({score_distinta} puntos)"
-                    )
-                    tabla = pd.DataFrame([mejor_distinta])
-                    if "Tasación 2026" in tabla.columns:
-                        cols = tabla.columns.tolist()
-                        cols.remove("Tasación 2026")
-                        if "País" in cols:
-                            indice = cols.index("País")
-                        else:
-                            indice = cols.index("Pais")
-                        cols.insert(indice, "Tasación 2026")
-                        tabla = tabla[cols]
-                    st.dataframe(
-                        tabla.reset_index(drop=True),
-                        use_container_width=True
-                    )
-                if mejor_misma is None and mejor_distinta is None:
-                    st.error(
-                        "No se encontró ninguna coincidencia "
-                        "confiable en la base SII."
-                    )    
-    except Exception as e:
-        st.error(f"Error consultando GetAPI: {e}")
-st.divider()
+                st.session_state["pendiente"] = (ficha, not solo_vacios)
+                st.session_state["origen"] = f"GetAPI · patente {patente}"
+                st.rerun()
+        except GetAPIConfigError as e:
+            st.error(str(e))
+        except requests.HTTPError as e:
+            codigo = e.response.status_code if e.response is not None else "?"
+            st.error(f"GetAPI respondió con error {codigo} para la patente {patente}.")
+        except requests.RequestException as e:
+            st.error(f"No fue posible conectar con GetAPI: {e}")
+
+with tab_pegar:
+    st.caption(
+        "En MAIA abra la ficha del vehículo → pestaña Detalle → seleccione el contenido "
+        "(Ctrl+A) → copie (Ctrl+C) y péguelo aquí. Se reconocen Marca, Modelo, Año, Versión, "
+        "Tipo de Vehículo, Tipo de Combustible, Transmisión, Cilindrada, Tracción, Nº Puertas "
+        "y Código Avalúo SII."
+    )
+    texto = st.text_area("Texto copiado desde MAIA", height=160, key="texto_maia")
+    if st.button("Cargar datos de la ficha", key="btn_pegar"):
+        datos = normalizar_ficha(parsear_texto_maia(texto))
+        if not datos:
+            st.warning("No se reconoció ningún campo. Revise que el texto incluya las etiquetas de la ficha.")
+        else:
+            st.session_state["pendiente"] = (datos, True)
+            st.session_state["origen"] = "Ficha MAIA (texto pegado)"
+            st.session_state["campos_leidos"] = sorted(CAMPOS[c][0] for c in datos)
+            st.rerun()
+    if st.session_state.get("campos_leidos"):
+        st.success("Campos leídos: " + ", ".join(st.session_state["campos_leidos"]))
+
+# ---------------------------------------------------------------------------
+# 2. Formulario: mismos campos que la ficha Detalle de MAIA
+# ---------------------------------------------------------------------------
+st.markdown("### Datos del vehículo (ficha Detalle MAIA)")
+if st.session_state.get("origen"):
+    st.caption(f"Datos cargados desde: {st.session_state['origen']}. Puede corregirlos antes de buscar.")
+
+
+def selector(col, campo):
+    label = CAMPOS[campo][0]
+    opciones = [""] + OPCIONES_MAIA[campo]
+    actual = st.session_state.get(clave(campo), "")
+    if actual and actual not in opciones:
+        opciones.append(actual)        # valor que no está en MAIA: se conserva igual
+    if clave(campo) not in st.session_state:
+        st.session_state[clave(campo)] = ""
+    col.selectbox(label, opciones, key=clave(campo))
+
+
+with st.form("ficha"):
+    a1, a2, a3, a4 = st.columns(4)
+    a1.text_input("Marca *", key=clave("marca"))
+    a2.text_input("Modelo *", key=clave("modelo"))
+    a3.text_input("Año *", key=clave("anio"))
+    a4.text_input("Versión", key=clave("version"))
+
+    b1, b2, b3, b4 = st.columns(4)
+    selector(b1, "tipo")
+    selector(b2, "combustible")
+    selector(b3, "transmision")
+    b4.text_input("Cilindrada", key=clave("cilindrada"), help="Ej: 1600, 1.6 o 1.6L")
+
+    c1, c2, c3, _ = st.columns(4)
+    selector(c1, "traccion")
+    selector(c2, "puertas")
+    c3.text_input("Codigo Avaluo SII (opcional)", key=clave("codigo_sii"),
+                  help="Si se conoce (por ejemplo desde GetAPI), se valida contra los demás datos.")
+
+    f1, f2 = st.columns([1, 5])
+    buscar = f1.form_submit_button("Buscar avalúo", type="primary")
+    limpiar = f2.form_submit_button("Limpiar")
+
+if limpiar:
+    for campo in CAMPOS:
+        st.session_state.pop(clave(campo), None)
+    for k in ("resultado", "origen", "campos_leidos"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
+if buscar:
+    vehiculo = sm.Vehiculo(**{c: st.session_state.get(clave(c), "") for c in CAMPOS})
+    with st.spinner("Buscando en la base SII..."):
+        st.session_state["resultado"] = sm.tasar(BASE, vehiculo)
+
+# ---------------------------------------------------------------------------
+# 3. Resultado
+# ---------------------------------------------------------------------------
+res = st.session_state.get("resultado")
+if res is not None:
+    st.divider()
+    st.markdown("### Valores")
+
+    if res.candidatos.empty:
+        st.error(res.mensaje)
+        for adv in res.advertencias:
+            st.warning(adv)
+    else:
+        cands = res.candidatos
+        etiquetas = [
+            f"{r['Código SII']} · {r['Modelo']} {r['Versión']} · {r['Transmisión']} · "
+            f"{pesos(r['Tasación 2026'])} · {r['Puntaje']:.0f} pts"
+            for _, r in cands.iterrows()
+        ]
+        idx = st.selectbox(
+            "Coincidencia seleccionada", range(len(etiquetas)),
+            format_func=lambda i: ("★ " if i == 0 else "") + etiquetas[i],
+            help="Por defecto se muestra la de mayor puntaje. Puede elegir otra si conoce la versión exacta.",
+        )
+        elegido = cands.iloc[idx]
+
+        conf = res.confianza if idx == 0 else "Manual"
+        clase = {"Alta": "alta", "Media": "media", "Baja": "baja"}.get(conf, "media")
+        metodo = "Código SII validado" if res.metodo == "codigo_validado" and idx == 0 \
+            else "Búsqueda por características"
+        st.markdown(
+            f'<span class="badge {clase}">Confianza {conf}</span> '
+            f'<span class="subtle">&nbsp;{metodo} · puntaje {elegido["Puntaje"]:.0f}/100 · '
+            f'base {elegido["Base"]}</span>',
+            unsafe_allow_html=True,
+        )
+        st.write("")
+
+        v1, v2 = st.columns(2)
+        with v1:
+            st.markdown(
+                f'<div class="valor-card"><div class="valor-label">Codigo Avaluo SII</div>'
+                f'<div class="valor-num">{elegido["Código SII"]}</div></div>',
+                unsafe_allow_html=True,
+            )
+            st.code(elegido["Código SII"], language=None)
+        with v2:
+            st.markdown(
+                f'<div class="valor-card"><div class="valor-label">Avalúo Fiscal (Tasación 2026)</div>'
+                f'<div class="valor-num">{pesos(elegido["Tasación 2026"])}</div></div>',
+                unsafe_allow_html=True,
+            )
+            st.code(str(elegido["Tasación 2026"]), language=None)
+        st.caption("Use el botón de copiar de cada recuadro para pegar el valor en MAIA (sección Valores).")
+
+        for adv in res.advertencias:
+            st.warning(adv)
+
+        with st.expander("Ver todas las coincidencias y el detalle del puntaje", expanded=conf != "Alta"):
+            tabla = cands.copy()
+            tabla["Tasación 2026"] = tabla["Tasación 2026"].map(pesos)
+            st.dataframe(tabla, width="stretch", hide_index=True)
