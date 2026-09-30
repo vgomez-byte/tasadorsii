@@ -51,7 +51,14 @@ def clave(campo):
 
 
 def cargar_en_formulario(datos: dict, sobrescribir: bool = True):
-    """Deja los datos en el formulario (antes de dibujar los widgets)."""
+    """
+    Deja los datos en el formulario (antes de dibujar los widgets).
+    Con sobrescribir=True se parte de un formulario vacío, para que no queden
+    datos del vehículo anterior (por ejemplo, la versión de otra patente).
+    """
+    if sobrescribir:
+        for campo in CAMPOS:
+            st.session_state[clave(campo)] = ""
     for campo, valor in datos.items():
         if campo not in CAMPOS:
             continue
@@ -106,6 +113,7 @@ with tab_patente:
             else:
                 st.session_state["pendiente"] = (ficha, not solo_vacios)
                 st.session_state["origen"] = f"GetAPI · patente {patente}"
+                st.session_state.pop("campos_leidos", None)
                 st.rerun()
         except GetAPIConfigError as e:
             st.error(str(e))
