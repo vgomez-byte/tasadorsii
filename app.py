@@ -75,6 +75,8 @@ def pesos(n) -> str:
 
 
 # Aplicar cargas pendientes (desde patente o texto pegado) antes de crear widgets
+if st.session_state.pop("limpiar_texto", False):
+    st.session_state["texto_maia"] = ""      # texto pegado del vehículo anterior
 if "pendiente" in st.session_state:
     datos, sobrescribir = st.session_state.pop("pendiente")
     cargar_en_formulario(datos, sobrescribir)
@@ -114,6 +116,8 @@ with tab_patente:
                 st.session_state["pendiente"] = (ficha, not solo_vacios)
                 st.session_state["origen"] = f"GetAPI · patente {patente}"
                 st.session_state.pop("campos_leidos", None)
+                if not solo_vacios:
+                    st.session_state["limpiar_texto"] = True
                 st.rerun()
         except GetAPIConfigError as e:
             st.error(str(e))
@@ -188,6 +192,7 @@ with st.form("ficha"):
 if limpiar:
     for campo in CAMPOS:
         st.session_state.pop(clave(campo), None)
+    st.session_state["limpiar_texto"] = True
     for k in ("resultado", "origen", "campos_leidos"):
         st.session_state.pop(k, None)
     st.rerun()
