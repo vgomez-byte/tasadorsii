@@ -163,7 +163,7 @@ def selector(col, campo):
         opciones.append(actual)        # valor que no está en MAIA: se conserva igual
     if clave(campo) not in st.session_state:
         st.session_state[clave(campo)] = ""
-    col.selectbox(label, opciones, key=clave(campo))
+    col.selectbox(label, opciones, key=clave(campo), placeholder="Seleccione")
 
 
 with st.form("ficha"):

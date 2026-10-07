@@ -153,6 +153,9 @@ def tokens(texto) -> list[str]:
     return re.findall(r"\d+\.\d+|[A-Z0-9]+", normalizar_texto(texto))
 
 
+RE_TRANS_MARCHAS = re.compile(r"(AT|MT|TA|TM)\d{1,2}|\d{1,2}(AT|MT)")
+
+
 def tokens_version(texto) -> frozenset:
     return frozenset(
         tk for tk in tokens(texto)
@@ -214,6 +217,10 @@ def traccion_desde_texto(*textos) -> frozenset:
 
 def transmision_desde_texto(texto) -> str:
     tks = set(tokens(texto))
+    for tk in list(tks):                          # 'MT6' -> 'MT', '6AT' -> 'AT'
+        m = RE_TRANS_MARCHAS.fullmatch(tk)
+        if m:
+            tks.add(m.group(1) or m.group(2))
     if tks & {"AT", "TA", "AUT", "AUTO", "AUTOMATICA", "AUTOMATICO", "CVT", "DCT", "DSG", "TIPTRONIC"}:
         return "AUTOMATICA"
     if tks & {"MT", "TM", "MEC", "MECANICA", "MECANICO", "MANUAL"}:
@@ -459,7 +466,11 @@ def sim_version(desc_tokens: frozenset, ver_c: str, fila):
         return None
     f_t = fila["_version_t"]
     if not f_t:
-        return None          # la fila SII no trae versión (ej. 'SIN VERSION'): no se puede comparar
+        if f_c in ("", "SINVERSION"):
+            return None      # la fila SII no tiene versión (común en pesados): no se puede comparar
+        # Versión SII sin palabras propias (ej. '2.2 AT'): valor neutro bajo, para que no
+        # le gane a una versión que sí se pudo comparar solo por no tener nada que comparar.
+        return 0.3
     comunes = ver_tokens & f_t
     # Coincidencias parciales de códigos (ej. 'GLS' vs 'GLSA', 'EG10' vs 'EG10A')
     parciales = sum(
